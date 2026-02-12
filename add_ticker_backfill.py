@@ -57,16 +57,17 @@ END_DATE = args.end_date.strip() if args.end_date.strip() else _date.today().iso
 FMP_API_KEY = os.environ["FMP_API_KEY"]
 
 PGHOST = os.environ["PGHOST"]
-PGPORT = int(os.getenv("DB_PORT") or os.getenv("PGPORT") or "5432")
+PGPORT = 5432
 PGDATABASE = os.getenv("PGDATABASE", "postgres")
 PGUSER = os.environ["PGUSER"]
 PGPASSWORD = os.environ["PGPASSWORD"]
 PGSSLMODE = os.getenv("PGSSLMODE", "require")
 
 ENGINE_URL = (
-    f"postgresql+psycopg2://{PGUSER}:{PGPASSWORD}@{PGHOST}:{PGPORT}/{PGDATABASE}"
+    f"postgresql+psycopg2://{PGUSER}:{PGPASSWORD}@{PGHOST}:5432/{PGDATABASE}"
     f"?sslmode={PGSSLMODE}"
 )
+
 engine = create_engine(ENGINE_URL, pool_pre_ping=True)
 
 pg_conn = psycopg2.connect(
