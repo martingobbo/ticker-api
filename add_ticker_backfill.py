@@ -63,10 +63,17 @@ PGUSER = os.environ["PGUSER"]
 PGPASSWORD = os.environ["PGPASSWORD"]
 PGSSLMODE = os.getenv("PGSSLMODE", "require")
 
-ENGINE_URL = (
-    f"postgresql+psycopg2://{PGUSER}:{PGPASSWORD}@{PGHOST}:5432/{PGDATABASE}"
-    f"?sslmode={PGSSLMODE}"
+from sqlalchemy.engine import URL as SA_URL
+ENGINE_URL = SA_URL.create(
+    drivername="postgresql+psycopg2",
+    username=PGUSER,
+    password=PGPASSWORD,
+    host=PGHOST,
+    port=5432,
+    database=PGDATABASE,
+    query={"sslmode": PGSSLMODE},
 )
+engine = create_engine(ENGINE_URL, pool_pre_ping=True)
 
 engine = create_engine(ENGINE_URL, pool_pre_ping=True)
 
