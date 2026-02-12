@@ -57,7 +57,7 @@ END_DATE = args.end_date.strip() if args.end_date.strip() else _date.today().iso
 FMP_API_KEY = os.environ["FMP_API_KEY"]
 
 PGHOST = os.environ["PGHOST"]
-PGPORT = int(os.getenv("DB_PORT", "5432"))
+PGPORT = int(os.getenv("DB_PORT") or os.getenv("PGPORT") or "5432")
 PGDATABASE = os.getenv("PGDATABASE", "postgres")
 PGUSER = os.environ["PGUSER"]
 PGPASSWORD = os.environ["PGPASSWORD"]
