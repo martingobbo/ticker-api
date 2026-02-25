@@ -15,14 +15,35 @@ bearer = HTTPBearer(auto_error=False)
 
 TRIGGER_SECRET = os.getenv("TRIGGER_SECRET", "")
 
+
 # ─────────────────────────────────────────────
-# EXISTING ADD-TICKER ENDPOINT (unchanged)
+# AUTH
+# ─────────────────────────────────────────────
+def _check_auth(credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer)):
+    if not TRIGGER_SECRET:
+        return True
+    if credentials is None or credentials.credentials != TRIGGER_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid or missing Bearer token")
+    return True
+
+
+# ─────────────────────────────────────────────
+# HEALTH
+# ─────────────────────────────────────────────
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+# ─────────────────────────────────────────────
+# ADD TICKER
 # ─────────────────────────────────────────────
 class TickerRequest(BaseModel):
     ticker: str
     tickerType: str
     startDate: str
     endDate: Optional[str] = ""
+
 
 @app.post("/add-ticker")
 def add_ticker(req: TickerRequest):
@@ -47,35 +68,85 @@ def add_ticker(req: TickerRequest):
 
     return {"message": result.stdout or "Ticker added successfully"}
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+
+# ─────────────────────────────────────────────
+# DAILY RUNNER (FMP) — async with status polling
+# ─────────────────────────────────────────────
+_daily_last_run: dict = {"status": "idle", "log": "", "date": None}
+_daily_lock = threading.Lock()
+
+
+@app.post("/run-daily")
+def run_daily(
+    date: Optional[str] = None,
+    _auth=Depends(_check_auth),
+):
+    global _daily_last_run
+
+    target_date = date.strip() if date else _date.today().isoformat()
+    try:
+        _date.fromisoformat(target_date)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid date: {target_date!r}. Use YYYY-MM-DD.")
+
+    with _daily_lock:
+        if _daily_last_run.get("status") == "running":
+            raise HTTPException(status_code=409, detail="A daily run is already in progress. Check /daily-status.")
+        _daily_last_run = {"status": "running", "log": "", "date": target_date}
+
+    thread = threading.Thread(target=_execute_daily, args=(target_date,), daemon=True)
+    thread.start()
+
+    return {
+        "status": "accepted",
+        "target_date": target_date,
+        "message": f"Daily runner started for {target_date}. Poll /daily-status for progress.",
+    }
+
+
+@app.get("/daily-status")
+def daily_status(_auth=Depends(_check_auth)):
+    return _daily_last_run
+
+
+def _execute_daily(target_date: str):
+    global _daily_last_run
+    try:
+        result = subprocess.run(
+            [sys.executable, "jobs/daily_runner.py", "--target-date", target_date],
+            capture_output=True,
+            text=True,
+            env=os.environ.copy(),
+            timeout=900,
+        )
+        log = result.stdout + ("\n--- STDERR ---\n" + result.stderr if result.stderr else "")
+        if result.returncode != 0:
+            with _daily_lock:
+                _daily_last_run.update({"status": "error", "log": log[-5000:]})
+        else:
+            with _daily_lock:
+                _daily_last_run.update({"status": "success", "log": log[-5000:]})
+    except subprocess.TimeoutExpired:
+        with _daily_lock:
+            _daily_last_run.update({"status": "error", "log": "Timed out after 900s"})
+    except Exception:
+        with _daily_lock:
+            _daily_last_run.update({"status": "error", "log": traceback.format_exc()[-5000:]})
 
 
 # ─────────────────────────────────────────────
-# NEW: FRED AD-HOC TRIGGER
+# FRED RUNNER — async with status polling
 # ─────────────────────────────────────────────
-_last_run: dict = {"status": "idle", "log": "", "date": None}
-_lock = threading.Lock()
+_fred_last_run: dict = {"status": "idle", "log": "", "date": None}
+_fred_lock = threading.Lock()
 
-def _check_auth(credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer)):
-    if not TRIGGER_SECRET:
-        return True
-    if credentials is None or credentials.credentials != TRIGGER_SECRET:
-        raise HTTPException(status_code=401, detail="Invalid or missing Bearer token")
-    return True
 
 @app.post("/run-fred")
 def run_fred(
     date: Optional[str] = None,
     _auth=Depends(_check_auth),
 ):
-    """
-    Trigger the FRED macro daily runner for a given date.
-    - Pass ?date=YYYY-MM-DD for a historical or missed date.
-    - Leave blank to run for today.
-    """
-    global _last_run
+    global _fred_last_run
 
     target_date = date.strip() if date else _date.today().isoformat()
     try:
@@ -83,12 +154,12 @@ def run_fred(
     except ValueError:
         raise HTTPException(status_code=422, detail=f"Invalid date format: {target_date!r}. Use YYYY-MM-DD.")
 
-    with _lock:
-        if _last_run.get("status") == "running":
-            raise HTTPException(status_code=409, detail="A run is already in progress. Check /fred-status.")
-        _last_run = {"status": "running", "log": "", "date": target_date}
+    with _fred_lock:
+        if _fred_last_run.get("status") == "running":
+            raise HTTPException(status_code=409, detail="A FRED run is already in progress. Check /fred-status.")
+        _fred_last_run = {"status": "running", "log": "", "date": target_date}
 
-    thread = threading.Thread(target=_execute_runner, args=(target_date,), daemon=True)
+    thread = threading.Thread(target=_execute_fred, args=(target_date,), daemon=True)
     thread.start()
 
     return {
@@ -97,14 +168,14 @@ def run_fred(
         "message": f"FRED runner started for {target_date}. Poll /fred-status for progress.",
     }
 
+
 @app.get("/fred-status")
 def fred_status(_auth=Depends(_check_auth)):
-    """Returns the result of the last /run-fred call."""
-    return _last_run
+    return _fred_last_run
 
-def _execute_runner(target_date: str):
-    """Runs the FRED macro pipeline for target_date. Captures stdout to _last_run."""
-    global _last_run
+
+def _execute_fred(target_date: str):
+    global _fred_last_run
 
     buf = io.StringIO()
     old_stdout = sys.stdout
@@ -157,7 +228,7 @@ def _execute_runner(target_date: str):
         )
         if dim_macro.empty:
             print("[STOP] No Macro tickers found in dim_ticker.")
-            _last_run.update({"status": "stopped", "log": buf.getvalue()})
+            _fred_last_run.update({"status": "stopped", "log": buf.getvalue()})
             return
 
         ticker_to_id = dict(zip(dim_macro["ticker"], dim_macro["ticker_id"]))
@@ -232,7 +303,7 @@ def _execute_runner(target_date: str):
         if not results:
             print(f"\n[STOP] No FRED observations for {target_date} (weekend/holiday?).")
             pg_conn.close(); engine.dispose()
-            _last_run.update({"status": "no_data", "log": buf.getvalue()})
+            _fred_last_run.update({"status": "no_data", "log": buf.getvalue()})
             return
 
         print(f"\n[3/4] Upserting {len(results)} rows ...")
@@ -284,17 +355,17 @@ def _execute_runner(target_date: str):
         pg_conn.commit()
 
         print(f"\n[DONE] {len(results)} tickers updated, {len(no_data)} skipped.")
-        _last_run.update({"status": "success", "updated": len(results), "skipped": len(no_data)})
+        _fred_last_run.update({"status": "success", "updated": len(results), "skipped": len(no_data)})
 
     except Exception:
         tb = traceback.format_exc()
         print(f"\n[ERROR]\n{tb}")
-        _last_run.update({"status": "error", "error": tb})
+        _fred_last_run.update({"status": "error", "error": tb})
 
     finally:
         sys.stdout = old_stdout
-        with _lock:
-            _last_run["log"] = buf.getvalue()
+        with _fred_lock:
+            _fred_last_run["log"] = buf.getvalue()
         pg_conn_ref = locals().get("pg_conn")
         engine_ref  = locals().get("engine")
         if pg_conn_ref:
