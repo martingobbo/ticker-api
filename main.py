@@ -113,7 +113,7 @@ def _execute_daily(target_date: str):
     global _daily_last_run
     try:
         result = subprocess.run(
-            [sys.executable, "jobs/daily_runner.py", "--target-date", target_date],
+            [sys.executable, "dailyrunner.py", "--target-date", target_date]
             capture_output=True,
             text=True,
             env=os.environ.copy(),
