@@ -49,7 +49,7 @@ class TickerRequest(BaseModel):
 def add_ticker(req: TickerRequest):
     cmd = [
         sys.executable, "add_ticker_backfill.py",
-        "--ticker", req.ticker,
+        "--tickers", req.ticker,
         "--ticker-type", req.tickerType,
         "--start-date", req.startDate,
     ]
@@ -67,6 +67,7 @@ def add_ticker(req: TickerRequest):
         raise HTTPException(status_code=500, detail=result.stderr or "Script failed")
 
     return {"message": result.stdout or "Ticker added successfully"}
+
 
 
 # ─────────────────────────────────────────────
